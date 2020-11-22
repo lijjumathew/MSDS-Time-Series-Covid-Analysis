@@ -3,9 +3,95 @@ title: "TS_Project"
 author: "Lijju Mathew"
 date: "11/21/2020"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
-```{r setup, include=FALSE}
+```{r imports}
 knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(GGally)
+library(astsa)
+library(tswge)
+library(lubridate)
+set.seed(1234)
 ```
+
+```{r function to calcualte rolling window}
+
+rolling_ase <-  function (data, phis,thetas, d, s, training_size, horizon,total) {
+  
+phis1 = phis
+thetas1 = thetas
+s1  = s
+d1  = d
+
+trainingSize = training_size
+horizon = horizon
+ASEHolder1 = numeric()
+
+for( i in 1:(total-(trainingSize + horizon) + 1)) {
+  forecasts1 = fore.aruma.wge(data[i:(i+(trainingSize-1))],phi = phis1, theta = thetas1, s = s1, d = d1,n.ahead = horizon)
+  ASE = mean((data[(trainingSize+i):(trainingSize+ i + (horizon) - 1)] - forecasts1$f)^2)
+  ASEHolder1[i] = ASE
+}
+
+ASEHolder1
+hist(ASEHolder1, main = paste("Histogram of Model ASEs" ))
+WindowedASE1 = mean(ASEHolder1)
+
+summary(ASEHolder1)
+WindowedASE1
+}
+```
+
+```{r IL read and plot data}
+il_covid_dataset = "https://raw.githubusercontent.com/lijjumathew/MSDS-Time-Series-Covid-Analysis/master/Data/illinois-history.csv"
+il_covid_rawdata <- read.csv(il_covid_dataset, sep = ",", header = TRUE)
+head(il_covid_rawdata)
+il_covid_data <- il_covid_rawdata %>% map_df(rev)
+il_covid_data$dailyPositivityRate = (il_covid_data$positiveIncrease/il_covid_data$totalTestResultsIncrease)*100
+head(il_covid_data)
+summary(il_covid_data$dailyPositivityRate)
+plot(il_covid_data$dailyPositivityRate)
+il_covid_ts <- ts(il_covid_data$dailyPositivityRate, start =decimal_date(as.Date("2020-03-15")), frequency = 365)
+summary(il_covid_ts)
+plotts.sample.wge(il_covid_ts)
+length(il_covid_ts)
+```
+
+```{r IL Identifying the order and (p,q,d,s)}
+il_covid_diff1=artrans.wge(il_covid_ts,phi.tr=1)
+plotts.wge(il_covid_diff1)
+plotts.sample.wge(il_covid_diff1)
+aic5.wge(il_covid_diff1,type = "aic")
+aic5.wge(il_covid_diff1,type = "bic") 
+# Both AIC and BIC produces p=4, q=2 as best model.
+# BIC produces p=2 and q=1 as second best model.
+aic5.wge(il_covid_diff1, p=0:10, q=0:10, type = "aic")
+# Produces p=8, q=5 as best model.
+aic5.wge(il_covid_diff1, p=0:10, q=0:10, type = "bic")
+# Produces p=4, q=2 as best model.
+```
+
+```{r IL Model identification}
+#Model ARIMA(4,1,2)
+il_m1=est.arma.wge(il_covid_diff1,p=4,q=2)
+il_m1$phi
+il_m1$theta
+il_model1=fore.aruma.wge(il_covid_ts, phi=il_m1$phi,theta=il_m1$theta,d=1,n.ahead=30,lastn = TRUE)
+ase_il_model1 = mean((il_covid_ts[222:251] - il_model1$f)^2)
+ase_il_model1
+rolling_ase(il_covid_ts,il_m1$phi,il_m1$theta,1,0,100,30,251)
+#Model ARIMA(2,1,1)
+il_m2=est.arma.wge(il_covid_diff1,p=2,q=1)
+il_model2=fore.aruma.wge(il_covid_ts, phi=il_m2$phi,theta=il_m2$theta,d=1,n.ahead=30,lastn = TRUE)
+ase_il_model2 = mean((il_covid_ts[222:251] - il_model2$f)^2)
+ase_il_model2
+rolling_ase(il_covid_ts,il_m2$phi,il_m2$theta,1,0,100,30,251)
+
+il_model1=fore.aruma.wge(il_covid_ts, phi=il_m1$phi,theta=il_m1$theta,d=1,n.ahead=30,lastn = FALSE)
+il_model1=fore.aruma.wge(il_covid_ts, phi=il_m1$phi,theta=il_m1$theta,d=1,n.ahead=90,lastn = FALSE)
+```
+
 
