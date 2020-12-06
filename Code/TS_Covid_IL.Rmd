@@ -1,0 +1,251 @@
+---
+title: "TS Covid Analysis - IL "
+author: "Lijju Mathew"
+date: "11/21/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r imports}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(GGally)
+library(astsa)
+library(tswge)
+library(lubridate)
+library(nnfor)
+set.seed(1234)
+options(scipen=10000)
+```
+
+```{r function to calcualte rolling window}
+
+rolling_ase <-  function (data, phis,thetas, d, s, training_size, horizon,total) {
+  
+phis1 = phis
+thetas1 = thetas
+s1  = s
+d1  = d
+
+trainingSize = training_size
+horizon = horizon
+ASEHolder1 = numeric()
+
+for( i in 1:(total-(trainingSize + horizon) + 1)) {
+  forecasts1 = fore.aruma.wge(data[i:(i+(trainingSize-1))],phi = phis1, theta = thetas1, s = s1, d = d1,n.ahead = horizon)
+  ASE = mean((data[(trainingSize+i):(trainingSize+ i + (horizon) - 1)] - forecasts1$f)^2)
+  ASEHolder1[i] = ASE
+}
+
+ASEHolder1
+hist(ASEHolder1, main = paste("Histogram of Model ASEs" ))
+WindowedASE1 = mean(ASEHolder1)
+
+summary(ASEHolder1)
+WindowedASE1
+}
+```
+
+```{r Goal 1 - IL read and plot data}
+il_covid_dataset = "https://raw.githubusercontent.com/lijjumathew/MSDS-Time-Series-Covid-Analysis/master/Data/illinois-history.csv"
+il_covid_rawdata <- read.csv(il_covid_dataset, sep = ",", header = TRUE)
+head(il_covid_rawdata)
+il_covid_data <- il_covid_rawdata %>% map_df(rev)
+il_covid_data$dailyPositivityRate = (il_covid_data$positiveIncrease/il_covid_data$totalTestResultsIncrease)*100
+head(il_covid_data)
+summary(il_covid_data$dailyPositivityRate)
+plot(il_covid_data$dailyPositivityRate)
+il_covid_ts <- ts(il_covid_data$dailyPositivityRate, start =1)
+summary(il_covid_ts)
+plotts.sample.wge(il_covid_ts)
+length(il_covid_ts)
+
+df_il <- il_covid_data
+df_il$date_mod=as.POSIXct(df_il$date, format="%m/%d/%y")
+attach(df_il)
+df_il_vis <- df_il %>% select(date_mod, death, negative,positive,totalTestResults) %>%   gather(key = "variable", value = "value",-date_mod)
+
+ggplot(df_il_vis, aes(x = date_mod, y = value)) +   
+  geom_line(aes(color = variable, linetype = variable)) + 
+  ggtitle("Covid Counts - IL State") +
+  xlab("Dates") + ylab("Counts")
+```
+
+```{r Goal 2 -  IL Identifying the order and (p,q,d,s)}
+il_covid_diff1=artrans.wge(il_covid_ts,phi.tr=1)
+plotts.wge(il_covid_diff1)
+plotts.sample.wge(il_covid_diff1)
+aic5.wge(il_covid_diff1,type = "aic")
+aic5.wge(il_covid_diff1,type = "bic") 
+# Both AIC and BIC produces p=4, q=2 as best model.
+# BIC produces p=2 and q=1 as second best model.
+aic5.wge(il_covid_diff1, p=0:10, q=0:10, type = "aic")
+# Produces p=8, q=5 as best model.
+aic5.wge(il_covid_diff1, p=0:10, q=0:10, type = "bic")
+# Produces p=4, q=2 as best model.
+pacf(il_covid_diff1)
+```
+
+```{r Goal 2 -  IL ARIMA Model identification}
+#Model ARIMA(4,1,2) With s=11
+il_m1=est.arma.wge(il_covid_diff1,p=4,q=2)
+il_m1$phi
+il_m1$theta
+il_model1=fore.aruma.wge(il_covid_ts, phi=il_m1$phi,theta=il_m1$theta,d=1,s=11,n.ahead=30,lastn = TRUE)
+ase_il_model1 = mean((il_covid_ts[222:251] - il_model1$f)^2)
+ase_il_model1
+#ASE=5.7353
+rolling_ase(il_covid_ts,il_m1$phi,il_m1$theta,1,11,100,30,251)
+#ROLLING ASE = 4.036
+#Model ARIMA(4,1,2) With s=13
+il_model12=fore.aruma.wge(il_covid_ts, phi=il_m1$phi,theta=il_m1$theta,d=1,s=13,n.ahead=30,lastn = TRUE)
+ase_il_model12 = mean((il_covid_ts[222:251] - il_model12$f)^2)
+ase_il_model12
+#ASE = 6.075095
+rolling_ase(il_covid_ts,il_m1$phi,il_m1$theta,1,13,100,30,251)
+#ROLLING ASE = 3.81487
+
+#Model ARIMA(2,1,1) With s=11
+il_m2=est.arma.wge(il_covid_diff1,p=2,q=1)
+il_model2=fore.aruma.wge(il_covid_ts, phi=il_m2$phi,theta=il_m2$theta,d=1,s=11,n.ahead=30,lastn = TRUE)
+ase_il_model2 = mean((il_covid_ts[222:251] - il_model2$f)^2)
+ase_il_model2
+#ASE=5.8193
+rolling_ase(il_covid_ts,il_m2$phi,il_m2$theta,1,11,100,30,251)
+#ROLLING_ASE=3.57525
+ljung.wge(il_m1$res, p=4,q=2)
+
+#Model ARIMA(2,1,1) With s=13
+il_model21=fore.aruma.wge(il_covid_ts, phi=il_m2$phi,theta=il_m2$theta,d=1,s=13,n.ahead=30,lastn = TRUE)
+ase_il_model21 = mean((il_covid_ts[222:251] - il_model21$f)^2)
+ase_il_model21
+#ASE=6.020
+rolling_ase(il_covid_ts,il_m2$phi,il_m2$theta,1,13,100,30,251)
+#ROLLING_ASE=3.9003
+ljung.wge(il_m2$res, p=2,q=1)
+```
+
+```{r Goal 2 - IL Model MLP}
+il_covid_ts_train <- ts(il_covid_data$dailyPositivityRate[1:221], start = 1)
+il_covid_ts_test <- ts(il_covid_data$dailyPositivityRate[222:251], start = 222)
+set.seed(1234)
+fit.mlp1= mlp(il_covid_ts_train, reps=50, comb="mean")
+fit.mlp1
+plot(fit.mlp1)
+fore.mlp1 = forecast(fit.mlp1, h=30)
+plot(fore.mlp1)
+ase_il_mlp1 = mean((il_covid_ts_test - fore.mlp1$mean) ^2)
+ase_il_mlp1
+#ASE = 29.58054
+
+fit.mlp2= mlp(il_covid_ts_train, lags = c(1,2,3,4,5,6,7,8,9,10,11),allow.det.season = FALSE)
+fit.mlp2
+plot(fit.mlp2)
+fore.mlp2 = forecast(fit.mlp2, h=30)
+plot(fore.mlp2)
+ase_il_mlp2 = mean((il_covid_ts_test - fore.mlp2$mean) ^2)
+ase_il_mlp2
+#ASE = 25.666
+
+
+fit.mlp3= mlp(il_covid_ts_train, difforder = c(11) ,allow.det.season = FALSE)
+fit.mlp3
+plot(fit.mlp3)
+fore.mlp3 = forecast(fit.mlp3, h=30)
+plot(fore.mlp3)
+ase_il_mlp3 = mean((il_covid_ts_test - fore.mlp3$mean) ^2)
+ase_il_mlp3
+#ASE = 36.63
+
+```
+
+```{r Goal 2 - IL Model ensemble }
+
+il_covid_ts <- ts(il_covid_data$dailyPositivityRate, start =1)
+il_covid_ts
+il_model1$f
+il_model2$f
+ensemble = (il_model1$f + il_model2$f)/2
+ensemble
+il_covid_ts
+plot(il_covid_ts, type="l")
+lines(seq(222,251,1),ensemble,col = "green")
+ase_ensemble_g2 = mean((il_covid_ts_test - ensemble)^2)
+ase_ensemble_g2
+```
+
+```{r Goal 2 - IL Forecast }
+
+il_model2_pred_7=fore.aruma.wge(il_covid_ts, phi=il_m2$phi,theta=il_m2$theta,d=1,s=11,n.ahead=7,lastn = FALSE)
+il_model2_pred_90=fore.aruma.wge(il_covid_ts, phi=il_m2$phi,theta=il_m2$theta,d=1,s=11,n.ahead=90,lastn = FALSE)
+```
+
+
+```{r Goal 3 - IL VAR Model }
+il_covid_data_train = il_covid_data[1:221,]
+il_covid_data_train
+X=cbind(il_covid_data_train$dailyPositivityRate,il_covid_data_train$positiveIncrease,il_covid_data_train$negativeIncrease,il_covid_data_train$deathIncrease)
+VARselect(X,lag.max = 10,type="const", season=11, exogen=NULL)
+var_il_model = VAR(X,season = 11, type = "both", p=8)
+pred_var_il_model = predict(var_il_model,n.ahead = 30)
+pred_var_il_model
+plot(il_covid_data$dailyPositivityRate, type = "l")
+lines(seq(222,251,1),pred_var_il_model$fcst$y1[,1],col = "red")
+pred_var_il_model
+
+ase_var_il_model = mean((il_covid_data$dailyPositivityRate[222:251] - pred_var_il_model$fcst$y1[1:30])^2)
+ase_var_il_model
+#76.96
+```
+
+```{r Goal 3 - IL MLP Model }
+il_covid_data_train = il_covid_data[1:221,]
+il_covid_data_train
+
+#pIncrease
+fit.mlp.pIncrease = mlp(ts(il_covid_data_train$positiveIncrease,frequency = 1),reps = 50, comb = "median")
+fore.mlp.pIncrease = forecast(fit.mlp.pIncrease, h = 30)
+fore.mlp.pIncrease$mean
+#nIncrease
+fit.mlp.nIncrease = mlp(ts(il_covid_data_train$negativeIncrease,frequency = 1),reps = 50, comb = "median")
+fore.mlp.nIncrease = forecast(fit.mlp.nIncrease, h = 30)
+
+#dIncrease
+fit.mlp.dIncrease = mlp(ts(il_covid_data_train$deathIncrease,frequency = 1),reps = 50, comb = "median")
+fore.mlp.dIncrease = forecast(fit.mlp.dIncrease, h = 30)
+
+
+il_covid_fore = data.frame(pIncrease = ts(c(il_covid_data_train$positiveIncrease,fore.mlp.pIncrease$mean)), nIncrease = ts(c(il_covid_data_train$negativeIncrease,fore.mlp.nIncrease$mean)),dIncrease = ts(c(il_covid_data_train$deathIncrease,fore.mlp.dIncrease$mean)))
+il_covid_fore
+
+
+il_covid_train_df = data.frame(pIncrease=ts(il_covid_data_train$positiveIncrease),nIncrease=ts(il_covid_data_train$negativeIncrease),dIncrease=il_covid_data_train$deathIncrease)
+fit.mlp4= mlp(ts(il_covid_data_train$dailyPositivityRate, frequency = 1),reps = 50,comb = "mean",xreg = il_covid_train_df)
+fit.mlp4
+plot(fit.mlp4)
+
+fore.mlp4 = forecast(fit.mlp4, h = 30, xreg = il_covid_fore)
+plot(fore.mlp4)
+ase_mlp_il_model = mean((il_covid_data$dailyPositivityRate[222:251] - fore.mlp4$mean)^2)
+ase_mlp_il_model
+#38.415
+```
+
+```{r Goal 3 - IL Model ensemble }
+ensemble = (pred_var_il_model$fcst$y1[,1] + fore.mlp4$mean)/2
+ensemble
+ase_ensemble_g3 = mean((il_covid_data$dailyPositivityRate[222:251] - ensemble)^2)
+ase_ensemble_g3
+#55.77
+```
+
+
+```{r Goal 3 - IL Forecast }
+il_covid_df = data.frame(pIncrease=ts(il_covid_data$positiveIncrease),nIncrease=ts(il_covid_data$negativeIncrease),dIncrease=il_covid_data$deathIncrease)
+fore_mlp_il_g3 = forecast(fit.mlp4, h = 7, xreg = il_covid_df)
+plot(fore_mlp_il_g3)
+
+fore_mlp_il_g3 = forecast(fit.mlp4, h = 30, xreg = il_covid_df)
+plot(fore_mlp_il_g3)
+```

@@ -1,0 +1,232 @@
+---
+title: "TS Covid Analysis - US "
+author: "Lijju Mathew"
+date: "11/21/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r imports}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(GGally)
+library(astsa)
+library(tswge)
+library(lubridate)
+library(nnfor)
+set.seed(1234)
+options(scipen=10000)
+```
+
+```{r function to calcualte rolling window}
+
+rolling_ase <-  function (data, phis,thetas, d, s, training_size, horizon,total) {
+  
+phis1 = phis
+thetas1 = thetas
+s1  = s
+d1  = d
+
+trainingSize = training_size
+horizon = horizon
+ASEHolder1 = numeric()
+
+for( i in 1:(total-(trainingSize + horizon) + 1)) {
+  forecasts1 = fore.aruma.wge(data[i:(i+(trainingSize-1))],phi = phis1, theta = thetas1, s = s1, d = d1,n.ahead = horizon)
+  ASE = mean((data[(trainingSize+i):(trainingSize+ i + (horizon) - 1)] - forecasts1$f)^2)
+  ASEHolder1[i] = ASE
+}
+
+ASEHolder1
+hist(ASEHolder1, main = paste("Histogram of Model ASEs" ))
+WindowedASE1 = mean(ASEHolder1)
+
+summary(ASEHolder1)
+WindowedASE1
+}
+```
+
+
+```{r Goal 1 - US read and plot data}
+us_covid_dataset = "https://raw.githubusercontent.com/lijjumathew/MSDS-Time-Series-Covid-Analysis/master/Data/national-history.csv"
+us_covid_rawdata <- read.csv(us_covid_dataset, sep = ",", header = TRUE)
+head(us_covid_rawdata)
+# Reverse the order of data i.e from March to November
+us_covid_data <- us_covid_rawdata %>% map_df(rev)
+us_covid_data$dailyPositivityRate = (us_covid_data$positiveIncrease/us_covid_data$totalTestResultsIncrease)*100
+head(us_covid_data)
+summary(us_covid_data$dailyPositivityRate)
+plot(us_covid_data$dailyPositivityRate)
+us_covid_ts <- ts(us_covid_data$dailyPositivityRate, start =decimal_date(as.Date("2020-03-15")), frequency = 365)
+summary(us_covid_ts)
+plotts.sample.wge(us_covid_ts)
+length(us_covid_ts)
+
+df_us <- us_covid_data
+df_us$date_mod=as.POSIXct(df_us$date, format="%m/%d/%y")
+pacf(us_covid_ts)
+```
+
+
+```{r Goal 2 - US Identifying the order and (p,q,d,s)}
+us_covid_diff1=artrans.wge(us_covid_ts,phi.tr=1)
+plotts.wge(us_covid_diff1)
+plotts.sample.wge(us_covid_diff1)
+aic5.wge(us_covid_diff1,type = "aic")
+aic5.wge(us_covid_diff1,type = "bic") 
+# AIC produces p=5, q=1 as best model, BIC as p=0, q=1
+aic5.wge(us_covid_diff1, p=0:15, q=0:10, type = "aic")
+# Produces p=14, q=2 as best model.
+aic5.wge(us_covid_diff1, p=0:10, q=0:10, type = "bic")
+# Produces p=5, q=1 as best model.
+pacf(us_covid_diff1)
+```
+
+
+```{r Goal 2 - US Model identification}
+#Model ARIMA(5,1,1)
+us_m1=est.arma.wge(us_covid_diff1,p=5,q=1)
+us_m1$phi
+us_m1$theta
+us_model1=fore.aruma.wge(us_covid_ts, phi=us_m1$phi,theta=us_m1$theta,d=1,n.ahead=30,lastn = TRUE)
+ase_us_model1 = mean((us_covid_ts[222:251] - us_model1$f)^2)
+ase_us_model1
+rolling_ase(us_covid_ts,us_m1$phi,us_m1$theta,1,0,100,30,251)
+
+#Model ARIMA(0,1,1)
+us_m2=est.arma.wge(us_covid_diff1,p=14,q=2)
+us_model2=fore.aruma.wge(us_covid_ts, phi=us_m2$phi,theta=us_m2$theta,d=1,n.ahead=30,lastn = TRUE)
+ase_us_model2 = mean((us_covid_ts[222:251] - us_model2$f)^2)
+ase_us_model2
+rolling_ase(us_covid_ts,us_m2$phi,us_m2$theta,1,0,100,30,251)
+
+us_model1=fore.aruma.wge(us_covid_ts, phi=us_m1$phi,theta=us_m1$theta,d=1,n.ahead=30,lastn = FALSE)
+us_model1=fore.aruma.wge(us_covid_ts, phi=us_m1$phi,theta=us_m1$theta,d=1,n.ahead=90,lastn = FALSE)
+ljung.wge(us_m1$res, p=5,q=1)
+ljung.wge(us_m2$res, p=14,q=2)
+```
+
+
+```{r Goal 2 - US Model MLP}
+us_covid_ts_train <- ts(us_covid_data$dailyPositivityRate[1:221], start = 1)
+us_covid_ts_test <- ts(us_covid_data$dailyPositivityRate[222:251], start = 222)
+set.seed(1234)
+fit.mlp1= mlp(us_covid_ts_train, reps=50, comb="mean")
+fit.mlp1
+plot(fit.mlp1)
+fore.mlp1 = forecast(fit.mlp1, h=30)
+plot(fore.mlp1)
+ase_us_mlp1 = mean((us_covid_ts_test - fore.mlp1$mean) ^2)
+ase_us_mlp1
+#ASE = 11.48
+
+fit.mlp2= mlp(us_covid_ts_train, lags = c(1,2,3,4,5,6,7,8,9,10),allow.det.season = FALSE)
+fit.mlp2
+plot(fit.mlp2)
+fore.mlp2 = forecast(fit.mlp2, h=30)
+plot(fore.mlp2)
+ase_us_mlp2 = mean((us_covid_ts_test - fore.mlp2$mean) ^2)
+ase_us_mlp2
+#ASE = 9.54666
+
+
+fit.mlp3= mlp(us_covid_ts_train, difforder = c(10) ,allow.det.season = FALSE)
+fit.mlp3
+plot(fit.mlp3)
+fore.mlp3 = forecast(fit.mlp3, h=30)
+plot(fore.mlp3)
+ase_us_mlp3 = mean((us_covid_ts_test - fore.mlp3$mean) ^2)
+ase_us_mlp3
+#ASE = 5.49
+```
+
+```{r Goal 2 - US Model ensemble }
+
+us_covid_ts <- ts(us_covid_data$dailyPositivityRate, start =1)
+us_covid_ts
+us_model1$f
+us_model2$f
+ensemble = (us_model1$f + us_model2$f)/2
+ensemble
+us_covid_ts
+plot(us_covid_ts, type="l")
+lines(seq(222,251,1),ensemble,col = "green")
+ase_ensemble_g2 = mean((us_covid_ts_test - ensemble)^2)
+ase_ensemble_g2
+#2.95
+```
+
+```{r Goal 2 - US Forecast }
+
+us_model2_pred_7=fore.aruma.wge(us_covid_ts, phi=us_m2$phi,theta=us_m2$theta,d=1,n.ahead=7,lastn = FALSE)
+us_model2_pred_90=fore.aruma.wge(us_covid_ts, phi=us_m2$phi,theta=us_m2$theta,d=1,n.ahead=90,lastn = FALSE)
+```
+
+
+```{r Goal 3 - US VAR Model }
+us_covid_data_train = us_covid_data[1:221,]
+us_covid_data_train
+X=cbind(us_covid_data_train$dailyPositivityRate,us_covid_data_train$positiveIncrease,us_covid_data_train$negativeIncrease,us_covid_data_train$deathIncrease)
+VARselect(X,lag.max = 10,type="const", exogen=NULL)
+var_us_model = VAR(X, type = "both", p=9)
+pred_var_us_model = predict(var_us_model,n.ahead = 30)
+pred_var_us_model
+plot(us_covid_data$dailyPositivityRate, type = "l")
+lines(seq(222,251,1),pred_var_us_model$fcst$y1[,1],col = "red")
+pred_var_us_model
+
+ase_var_us_model = mean((us_covid_data$dailyPositivityRate[222:251] - pred_var_us_model$fcst$y1[1:30])^2)
+ase_var_us_model
+#76.96
+```
+
+```{r Goal 3 - US MLP Model }
+us_covid_data_train = us_covid_data[1:221,]
+us_covid_data_train
+
+#pIncrease
+fit.mlp.pIncrease = mlp(ts(us_covid_data_train$positiveIncrease,frequency = 1),reps = 50, comb = "median")
+fore.mlp.pIncrease = forecast(fit.mlp.pIncrease, h = 30)
+fore.mlp.pIncrease$mean
+#nIncrease
+fit.mlp.nIncrease = mlp(ts(us_covid_data_train$negativeIncrease,frequency = 1),reps = 50, comb = "median")
+fore.mlp.nIncrease = forecast(fit.mlp.nIncrease, h = 30)
+
+#dIncrease
+fit.mlp.dIncrease = mlp(ts(us_covid_data_train$deathIncrease,frequency = 1),reps = 50, comb = "median")
+fore.mlp.dIncrease = forecast(fit.mlp.dIncrease, h = 30)
+
+
+us_covid_fore = data.frame(pIncrease = ts(c(us_covid_data_train$positiveIncrease,fore.mlp.pIncrease$mean)), nIncrease = ts(c(us_covid_data_train$negativeIncrease,fore.mlp.nIncrease$mean)),dIncrease = ts(c(us_covid_data_train$deathIncrease,fore.mlp.dIncrease$mean)))
+us_covid_fore
+
+
+us_covid_train_df = data.frame(pIncrease=ts(us_covid_data_train$positiveIncrease),nIncrease=ts(us_covid_data_train$negativeIncrease),dIncrease=us_covid_data_train$deathIncrease)
+fit.mlp4= mlp(ts(us_covid_data_train$dailyPositivityRate, frequency = 1),reps = 50,comb = "mean",xreg = us_covid_train_df)
+fit.mlp4
+plot(fit.mlp4)
+
+fore.mlp4 = forecast(fit.mlp4, h = 30, xreg = us_covid_fore)
+plot(fore.mlp4)
+ase_mlp_us_model = mean((us_covid_data$dailyPositivityRate[222:251] - fore.mlp4$mean)^2)
+ase_mlp_us_model
+#6.02
+```
+
+```{r Goal 3 - US Model ensemble }
+ensemble = (pred_var_us_model$fcst$y1[,1] + fore.mlp4$mean)/2
+ensemble
+ase_ensemble_g3 = mean((us_covid_data$dailyPositivityRate[222:251] - ensemble)^2)
+ase_ensemble_g3
+#11.77
+```
+
+```{r Goal 3 - US Forecast }
+us_covid_df = data.frame(pIncrease=ts(us_covid_data$positiveIncrease),nIncrease=ts(us_covid_data$negativeIncrease),dIncrease=us_covid_data$deathIncrease)
+fore_mlp_us_g3 = forecast(fit.mlp4, h = 7, xreg = us_covid_df)
+plot(fore_mlp_us_g3)
+
+fore_mlp_us_g3 = forecast(fit.mlp4, h = 30, xreg = us_covid_df)
+plot(fore_mlp_us_g3)
+```
